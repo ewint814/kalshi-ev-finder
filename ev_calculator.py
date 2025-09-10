@@ -5,9 +5,49 @@ Calculate Expected Value opportunities between Kalshi and sportsbook odds
 """
 
 from nfl_markets import get_nfl_moneyline_markets, extract_games_from_markets
-from espn_odds import american_to_probability, get_espn_nfl_odds
-from manual_odds import get_manual_nfl_odds
+from odds_fetcher import OddsFetcher
 import json
+import os
+
+
+def get_sportsbook_odds():
+    """
+    Get live sportsbook odds from The Odds API
+    
+    Returns:
+        Dict mapping team codes to American odds or None if failed
+    """
+    # Check if API key is available
+    api_key = os.getenv('ODDS_API_KEY')
+    
+    if not api_key:
+        print("❌ ODDS_API_KEY not found in .env file")
+        print("   Get your free API key from: https://the-odds-api.com/")
+        return None
+    
+    print("📡 Fetching LIVE odds from The Odds API...")
+    fetcher = OddsFetcher()
+    raw_odds = fetcher.get_nfl_odds()
+    
+    if raw_odds:
+        team_odds = fetcher.parse_odds_to_teams(raw_odds)
+        if team_odds:
+            print(f"✅ Live odds retrieved for {len(team_odds)} teams")
+            return team_odds
+        else:
+            print("❌ Live odds parsing failed")
+            return None
+    else:
+        print("❌ Live odds fetch failed")
+        return None
+
+
+def american_to_probability(odds):
+    """Convert American odds to implied probability"""
+    if odds > 0:
+        return 100 / (odds + 100)
+    else:
+        return abs(odds) / (abs(odds) + 100)
 
 
 def calculate_ev(kalshi_ask_cents, sportsbook_american_odds, bet_amount=10):
@@ -114,11 +154,14 @@ def find_ev_opportunities():
     games = extract_games_from_markets(kalshi_markets)
     print(f"🏈 Found {len(games)} games with liquid markets")
     
-    # Get MANUAL NFL odds (realistic and clean)
-    print("\n📝 Getting manual NFL odds...")
-    manual_odds = get_manual_nfl_odds()
+    # Get LIVE NFL odds from The Odds API
+    print("\n📡 Getting live NFL odds...")
+    sportsbook_odds = get_sportsbook_odds()
+    if not sportsbook_odds:
+        print("❌ Cannot proceed without sportsbook odds")
+        return []
     
-    print(f"📊 Using {len(manual_odds)} teams with manual odds")
+    print(f"📊 Using {len(sportsbook_odds)} teams with live odds")
     
     opportunities = []
     
@@ -145,16 +188,13 @@ def find_ev_opportunities():
     print("\n🔍 Analyzing games for EV opportunities...")
     for game_id, teams in games.items():
         for team_code, kalshi_data in teams.items():
-            # Try to match Kalshi team code with ESPN odds
-            espn_odds_for_team = None
+            # Try to match Kalshi team code with live sportsbook odds
+            sportsbook_odds_for_team = sportsbook_odds.get(team_code)
             
-            # Try direct match with manual odds
-            manual_odds_for_team = manual_odds.get(team_code)
-            
-            if manual_odds_for_team is not None:
+            if sportsbook_odds_for_team is not None:
                 ev_result = calculate_ev(
                     kalshi_data['yes_ask'],
-                    manual_odds_for_team
+                    sportsbook_odds_for_team
                 )
                 
                 # Add game context
@@ -162,12 +202,12 @@ def find_ev_opportunities():
                 ev_result['team'] = team_code
                 ev_result['volume_24h'] = kalshi_data['volume_24h']
                 ev_result['liquidity'] = kalshi_data['liquidity']
-                ev_result['sportsbook_odds'] = manual_odds_for_team
+                ev_result['sportsbook_odds'] = sportsbook_odds_for_team
                 
                 opportunities.append(ev_result)
-                print(f"  ✅ Matched {team_code} with VegasInsider odds {manual_odds_for_team:+d}")
+                print(f"  ✅ Matched {team_code} with live odds {sportsbook_odds_for_team:+d}")
             else:
-                print(f"  ❌ No VegasInsider odds found for {team_code}")
+                print(f"  ❌ No live odds found for {team_code}")
     
     # Sort by EV percentage
     opportunities.sort(key=lambda x: x['ev_percent'], reverse=True)
