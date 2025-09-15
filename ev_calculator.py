@@ -43,11 +43,51 @@ def get_sportsbook_odds():
 
 
 def american_to_probability(odds):
-    """Convert American odds to implied probability"""
+    """Convert American odds to implied probability (includes vig)"""
     if odds > 0:
         return 100 / (odds + 100)
     else:
         return abs(odds) / (abs(odds) + 100)
+
+
+def remove_vig_from_odds(team_odds, opponent_odds):
+    """
+    Remove vig from sportsbook odds using both teams' actual odds
+    
+    Args:
+        team_odds: American odds for the team we're betting on
+        opponent_odds: American odds for the opponent (actual from sportsbook)
+        
+    Returns:
+        True probability estimate (vig removed)
+    """
+    # Convert both to implied probabilities
+    team_implied = american_to_probability(team_odds)
+    opponent_implied = american_to_probability(opponent_odds)
+    
+    # Total should equal 1.0 in fair market, but sportsbooks add vig
+    total_implied = team_implied + opponent_implied
+    
+    # Remove vig proportionally
+    if total_implied > 1.0:
+        # This is the normal case - total > 100% due to vig
+        true_prob = team_implied / total_implied
+        vig_removed = total_implied - 1.0
+        
+        return {
+            'true_probability': true_prob,
+            'raw_probability': team_implied, 
+            'vig_percent': vig_removed * 100,
+            'total_implied': total_implied
+        }
+    else:
+        # Rare case - just use raw probability
+        return {
+            'true_probability': team_implied,
+            'raw_probability': team_implied,
+            'vig_percent': 0.0,
+            'total_implied': total_implied
+        }
 
 
 def calculate_ev(kalshi_ask_cents, sportsbook_american_odds, bet_amount=10):

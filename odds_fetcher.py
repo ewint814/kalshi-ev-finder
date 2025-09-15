@@ -33,6 +33,7 @@ class OddsFetcher:
     def get_nfl_odds(self) -> Optional[Dict]:
         """
         Fetch current NFL moneyline odds from The Odds API
+        Filter for current week's games only
         
         Returns:
             Dict with odds data or None if error
@@ -43,12 +44,15 @@ class OddsFetcher:
             
         url = f"{self.base_url}/sports/{self.sport}/odds"
         
+        # Get current week's games (Sept 11-15, 2025)
         params = {
             'api_key': self.api_key,
             'regions': self.regions,
             'markets': self.markets,
             'oddsFormat': self.odds_format,
-            'dateFormat': 'iso'
+            'dateFormat': 'iso',
+            'commence_time_from': '2025-09-11T00:00:00Z',  # Thursday Sep 11
+            'commence_time_to': '2025-09-16T06:00:00Z'     # Tuesday Sep 16 (after MNF)
         }
         
         try:
@@ -64,6 +68,14 @@ class OddsFetcher:
             if response.status_code == 200:
                 data = response.json()
                 print(f"✅ Retrieved odds for {len(data)} NFL games")
+                
+                # Show first few games to verify correct week
+                print(f"\n🔍 Games from API (first 5):")
+                for i, game in enumerate(data[:5]):
+                    home = game.get('home_team', 'Unknown')
+                    away = game.get('away_team', 'Unknown')
+                    print(f"  {i+1}. {away} @ {home}")
+                
                 return data
             else:
                 print(f"❌ API Error {response.status_code}: {response.text}")
@@ -91,13 +103,41 @@ class OddsFetcher:
         print(f"\n📝 PARSING ODDS FROM THE ODDS API")
         print("=" * 40)
         
+        from datetime import datetime
+        
         for game in odds_data:
             home_team = game.get('home_team', '')
             away_team = game.get('away_team', '')
+            commence_time = game.get('commence_time', '')
             
-            # Convert team names to our codes (simplified mapping)
+            # Filter by commence_time - only current week (Sept 11-16, 2025)
+            if commence_time:
+                try:
+                    game_date = datetime.fromisoformat(commence_time.replace('Z', '+00:00'))
+                    # Current NFL week: Sept 11-16, 2025
+                    week_start = datetime.fromisoformat('2025-09-11T00:00:00+00:00')
+                    week_end = datetime.fromisoformat('2025-09-17T00:00:00+00:00')
+                    
+                    if not (week_start <= game_date < week_end):
+                        print(f"  ⚠️  Skipped: {away_team} @ {home_team} (wrong week: {game_date.strftime('%Y-%m-%d')})")
+                        continue
+                except Exception as e:
+                    print(f"  ⚠️  Skipped: {away_team} @ {home_team} (date parsing error)")
+                    continue
+            
+            # Convert team names to our codes
             home_code = self._team_name_to_code(home_team)
             away_code = self._team_name_to_code(away_team)
+            
+            # Skip if either team mapping failed
+            if not home_code or not away_code:
+                print(f"  ⚠️  Skipped: {away_team} @ {home_team} (team mapping failed)")
+                continue
+                
+            # Skip if we already have odds for these teams (avoid duplicates)
+            if home_code in team_odds or away_code in team_odds:
+                print(f"  ⚠️  Skipped: {away_team} @ {home_team} (teams already processed)")
+                continue
             
             # Collect odds from ALL bookmakers for averaging
             bookmakers = game.get('bookmakers', [])
