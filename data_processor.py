@@ -13,15 +13,15 @@ class DataProcessor:
     
     def __init__(self):
         self.sportsbook_file = "sportsbook_odds.xlsx"
-        self.kalshi_file = "kalshi_odds.xlsx"
-        self.combined_file = "combined_odds_analysis.xlsx"
+        self.kalshi_file = "kalshi_all_markets.xlsx"  # Updated to use all markets file
+        self.combined_file = "calibration_tracker.xlsx"  # Renamed for calibration focus
     
     def combine_all_data(self):
-        """Combine Kalshi and sportsbook data into analysis-ready format"""
-        print("🔄 COMBINING ALL ODDS DATA")
+        """Combine Kalshi and sportsbook data with exact line matching"""
+        print("🔄 CREATING CALIBRATION TRACKER")
         print("=" * 40)
         
-        # Load data
+        # Load data (using existing collected data - no API calls)
         sportsbook_df = self._load_sportsbook_data()
         kalshi_df = self._load_kalshi_data()
         
@@ -29,10 +29,13 @@ class DataProcessor:
             print("❌ No data found to combine")
             return
         
-        # Create combined analysis
-        self._create_combined_analysis(sportsbook_df, kalshi_df)
+        # Convert Kalshi lines to sportsbook format and match exactly
+        matched_data = self._match_exact_lines(sportsbook_df, kalshi_df)
         
-        print(f"✅ Combined analysis saved to: {self.combined_file}")
+        # Create raw data sheet only (no analysis yet)
+        self._create_raw_data_sheet(matched_data)
+        
+        print(f"✅ Raw calibration data saved to: {self.combined_file}")
     
     def _load_sportsbook_data(self):
         """Load sportsbook odds data"""
@@ -352,6 +355,186 @@ class DataProcessor:
             
         except Exception as e:
             print(f"⚠️  Error updating Kalshi results: {e}")
+    
+    def _match_exact_lines(self, sportsbook_df, kalshi_df):
+        """Match Kalshi and sportsbook data with exact line conversion"""
+        print("🔗 Matching exact lines with conversion...")
+        
+        matched_rows = []
+        
+        if kalshi_df is None or sportsbook_df is None:
+            print("❌ Missing data for matching")
+            return pd.DataFrame()
+        
+        # Process each Kalshi entry
+        for _, kalshi_row in kalshi_df.iterrows():
+            bet_type = kalshi_row.get('bet_type', '')
+            
+            if bet_type == 'moneyline':
+                # Direct team matching for moneylines
+                matches = self._match_moneyline(kalshi_row, sportsbook_df)
+                
+            elif bet_type == 'spread':
+                # Convert: Kalshi "over X" = Sportsbook "-(X-0.5)"
+                matches = self._match_spread(kalshi_row, sportsbook_df)
+                
+            elif bet_type == 'total':
+                # Convert: Kalshi ticker "X" = Sportsbook "X-0.5"
+                matches = self._match_total(kalshi_row, sportsbook_df)
+            
+            else:
+                continue
+            
+            matched_rows.extend(matches)
+        
+        print(f"✅ Found {len(matched_rows)} exact line matches")
+        return pd.DataFrame(matched_rows)
+    
+    def _match_moneyline(self, kalshi_row, sportsbook_df):
+        """Match moneyline bets by team"""
+        team = kalshi_row.get('team', '')
+        away_team = kalshi_row.get('away_team', '')
+        home_team = kalshi_row.get('home_team', '')
+        
+        # Find sportsbook moneylines for same game/team
+        sb_matches = sportsbook_df[
+            (sportsbook_df['bet_type'] == 'moneyline') &
+            (sportsbook_df['away_team'].str.contains(away_team.split()[-1], case=False, na=False)) &
+            (sportsbook_df['home_team'].str.contains(home_team.split()[-1], case=False, na=False)) &
+            (sportsbook_df['team'].str.contains(team.split()[-1], case=False, na=False))
+        ]
+        
+        matches = []
+        for _, sb_row in sb_matches.iterrows():
+            matches.append(self._create_matched_row(kalshi_row, sb_row))
+        
+        return matches
+    
+    def _match_spread(self, kalshi_row, sportsbook_df):
+        """Match spread bets with conversion: Kalshi 'over X' = Sportsbook '-(X-0.5)'"""
+        kalshi_line = kalshi_row.get('line_value')
+        if kalshi_line is None:
+            return []
+        
+        # Convert Kalshi line to sportsbook equivalent
+        # Kalshi "Team wins by over 5" = Sportsbook "Team -4.5"
+        sportsbook_line = -(kalshi_line - 0.5)
+        
+        team = kalshi_row.get('team', '')
+        away_team = kalshi_row.get('away_team', '')
+        home_team = kalshi_row.get('home_team', '')
+        
+        # Find exact sportsbook spread matches
+        sb_matches = sportsbook_df[
+            (sportsbook_df['bet_type'] == 'spread') &
+            (sportsbook_df['away_team'].str.contains(away_team.split()[-1], case=False, na=False)) &
+            (sportsbook_df['home_team'].str.contains(home_team.split()[-1], case=False, na=False)) &
+            (sportsbook_df['spread_line'] == sportsbook_line) &
+            (sportsbook_df['team'].str.contains(team.split()[-1], case=False, na=False))
+        ]
+        
+        matches = []
+        for _, sb_row in sb_matches.iterrows():
+            matches.append(self._create_matched_row(kalshi_row, sb_row, converted_line=sportsbook_line))
+        
+        return matches
+    
+    def _match_total(self, kalshi_row, sportsbook_df):
+        """Match total bets with conversion: Kalshi ticker 'X' = Sportsbook 'X-0.5'"""
+        # Extract total from Kalshi ticker (e.g., "...TOTAL-44" -> 44)
+        ticker = kalshi_row.get('ticker', '')
+        kalshi_total = None
+        
+        if 'TOTAL-' in ticker:
+            try:
+                kalshi_total = float(ticker.split('TOTAL-')[-1])
+            except:
+                return []
+        
+        if kalshi_total is None:
+            return []
+        
+        # Convert: Kalshi "44" = Sportsbook "43.5"
+        sportsbook_total = kalshi_total - 0.5
+        
+        away_team = kalshi_row.get('away_team', '')
+        home_team = kalshi_row.get('home_team', '')
+        
+        # Find exact sportsbook total matches
+        sb_matches = sportsbook_df[
+            (sportsbook_df['bet_type'] == 'total') &
+            (sportsbook_df['away_team'].str.contains(away_team.split()[-1], case=False, na=False)) &
+            (sportsbook_df['home_team'].str.contains(home_team.split()[-1], case=False, na=False)) &
+            (sportsbook_df['total_line'] == sportsbook_total)
+        ]
+        
+        matches = []
+        for _, sb_row in sb_matches.iterrows():
+            matches.append(self._create_matched_row(kalshi_row, sb_row, converted_line=sportsbook_total))
+        
+        return matches
+    
+    def _create_matched_row(self, kalshi_row, sb_row, converted_line=None):
+        """Create a matched data row"""
+        return {
+            'collection_date': sb_row.get('collection_time', '').split('T')[0],
+            'game_id': sb_row.get('game_id', ''),
+            'away_team': sb_row.get('away_team', ''),
+            'home_team': sb_row.get('home_team', ''),
+            'game_time': sb_row.get('game_time', ''),
+            'bet_type': sb_row.get('bet_type', ''),
+            'line_value': converted_line or sb_row.get('spread_line') or sb_row.get('total_line'),
+            'team_side': sb_row.get('team', ''),
+            
+            # Kalshi data
+            'kalshi_probability': kalshi_row.get('kalshi_probability', 0),
+            'kalshi_bid': kalshi_row.get('yes_bid', 0),
+            'kalshi_ask': kalshi_row.get('yes_ask', 0),
+            'kalshi_volume': kalshi_row.get('volume_24h', 0),
+            
+            # Sportsbook data (vig-adjusted)
+            'sportsbook_probability': sb_row.get('implied_prob_vig_adj', 0),
+            'sportsbook_odds': sb_row.get('american_odds', 0),
+            'bookmaker': sb_row.get('bookmaker', ''),
+            
+            # Results (to be filled)
+            'actual_result': None,
+            'kalshi_correct': None,
+            'sportsbook_correct': None,
+            'winner': None,
+            'final_score': None
+        }
+    
+    def _create_raw_data_sheet(self, matched_df):
+        """Create clean raw data sheet for calibration"""
+        if matched_df.empty:
+            print("❌ No matched data to save")
+            return
+        
+        # Sort by game time and bet type
+        matched_df = matched_df.sort_values(['game_time', 'bet_type', 'line_value'])
+        
+        # Save to Excel
+        with pd.ExcelWriter(self.combined_file, engine='openpyxl') as writer:
+            matched_df.to_excel(writer, sheet_name='Raw Data', index=False)
+            
+            # Create summary sheet
+            summary_data = {
+                'Metric': ['Total Matches', 'Unique Games', 'Moneylines', 'Spreads', 'Totals', 'Created'],
+                'Value': [
+                    len(matched_df),
+                    matched_df['game_id'].nunique(),
+                    len(matched_df[matched_df['bet_type'] == 'moneyline']),
+                    len(matched_df[matched_df['bet_type'] == 'spread']),
+                    len(matched_df[matched_df['bet_type'] == 'total']),
+                    datetime.now().strftime('%Y-%m-%d %H:%M')
+                ]
+            }
+            pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
+        
+        print(f"📊 Raw data: {len(matched_df)} matched entries")
+        print(f"🎮 Games: {matched_df['game_id'].nunique()}")
+        print(f"📈 Bet types: {matched_df['bet_type'].value_counts().to_dict()}")
 
 def main():
     processor = DataProcessor()
